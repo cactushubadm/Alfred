@@ -50,3 +50,5 @@ de design (paleta e tipografia) já centralizados em `tailwind.config.ts`.
 - Cadastro de contas múltiplas (hoje as transações já suportam `account_id`, falta a UI)
 - Gráfico em rosca por categoria no dashboard
 - Orçamento por categoria com alertas
+
+Deploy configurado em 28/09/2026
