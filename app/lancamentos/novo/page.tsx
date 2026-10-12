@@ -8,9 +8,11 @@ import MoneyInput from "@/components/MoneyInput";
 import CategoryPicker from "@/components/CategoryPicker";
 import ToggleSwitch from "@/components/ToggleSwitch";
 
+import { cardSchedule, todaySaoPaulo } from "@/lib/cartao";
+
 type MovementType = "receita" | "despesa" | "transferencia";
 type Category = { id: string; name: string; icon: string; type: "receita" | "despesa" };
-type Account = { id: string; name: string; type: string };
+type Account = { id: string; name: string; type: string; closing_day: number | null; due_day: number | null };
 
 // Divide um valor em N parcelas de 2 casas decimais cuja soma bate
 // exatamente com o valor original (os centavos que sobram vão nas
@@ -20,16 +22,6 @@ function splitInstallments(totalAmount: number, count: number): number[] {
   const base = Math.floor(totalCents / count);
   const remainder = totalCents - base * count;
   return Array.from({ length: count }, (_, i) => (base + (i < remainder ? 1 : 0)) / 100);
-}
-
-function addMonths(date: Date, months: number) {
-  const d = new Date(date);
-  d.setMonth(d.getMonth() + months);
-  return d;
-}
-
-function toISODate(date: Date) {
-  return date.toISOString().slice(0, 10);
 }
 
 // useSearchParams() exige um limite de Suspense (pro build estático não
@@ -57,7 +49,8 @@ function NovoLancamentoPageInner() {
   const [toAccountId, setToAccountId] = useState<string>("");
   const [isRecurring, setIsRecurring] = useState(false);
   const [isPending, setIsPending] = useState(false);
-  const [dueDate, setDueDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [dueDate, setDueDate] = useState(() => todaySaoPaulo());
+  const [purchaseDate, setPurchaseDate] = useState(todaySaoPaulo);
   const [isInstallment, setIsInstallment] = useState(false);
   const [totalInstallments, setTotalInstallments] = useState("2");
   const [loading, setLoading] = useState(false);
@@ -67,13 +60,20 @@ function NovoLancamentoPageInner() {
   useEffect(() => {
     supabase
       .from("accounts")
-      .select("id, name, type")
+      .select("id, name, type, closing_day, due_day")
       .order("name")
       .then(({ data }) => setAccounts(data ?? []));
   }, []);
 
   const selectedAccount = accounts.find((a) => a.id === accountId);
   const isCardAccount = selectedAccount?.type === "cartao";
+
+  let preview: ReturnType<typeof cardSchedule>[number] | undefined;
+  let cardError: string | undefined;
+  if (type === "despesa" && isCardAccount) {
+    try { preview = cardSchedule(purchaseDate, selectedAccount!.closing_day!, selectedAccount!.due_day!)[0]; }
+    catch (error) { cardError = (error as Error).message; }
+  }
 
   useEffect(() => {
     if (!isCardAccount) setIsInstallment(false);
@@ -122,6 +122,18 @@ function NovoLancamentoPageInner() {
     const isParceled =
       type === "despesa" && isCardAccount && isInstallment && installmentCount >= 2;
 
+    let schedule: ReturnType<typeof cardSchedule> = [];
+    try {
+      if (type === "despesa" && isCardAccount) {
+        schedule = cardSchedule(purchaseDate, selectedAccount!.closing_day!, selectedAccount!.due_day!, isParceled ? installmentCount : 1);
+        if (isInstallment && !isParceled) throw new Error("Número de parcelas inválido.");
+      }
+    } catch (error) {
+      setError((error as Error).message);
+      submittingRef.current = false;
+      setLoading(false);
+      return;
+    }
     const totalAmount = Number(amount);
     const parts = isParceled ? splitInstallments(totalAmount, installmentCount) : null;
 
@@ -130,6 +142,7 @@ function NovoLancamentoPageInner() {
       .insert(
         type === "transferencia"
           ? {
+              occurred_at: purchaseDate || todaySaoPaulo(),
               user_id: user.id,
               type: "transferencia",
               amount: totalAmount,
@@ -139,15 +152,18 @@ function NovoLancamentoPageInner() {
               is_recurring: false,
             }
           : {
+              occurred_at: purchaseDate || todaySaoPaulo(),
               user_id: user.id,
               type,
               amount: parts ? parts[0] : totalAmount,
               description: description || null,
               category_id: categoryId || null,
               account_id: accountId || null,
-              is_recurring: isRecurring,
-              status: isPending ? "pendente" : "pago",
-              due_date: isPending ? dueDate : null,
+              invoice_month: schedule[0]?.invoice_month ?? null,
+              card_due_date: schedule[0]?.due_date ?? null,
+              is_recurring: schedule.length ? false : isRecurring,
+              status: !schedule.length && isPending ? "pendente" : "pago",
+              due_date: !schedule.length && isPending ? dueDate : null,
             }
       )
       .select("id")
@@ -161,14 +177,13 @@ function NovoLancamentoPageInner() {
     }
 
     if (parts && inserted) {
-      const today = new Date();
       const futureInstallments = parts.slice(1).map((partAmount, idx) => ({
         user_id: user.id,
         transaction_id: inserted.id,
         installment_number: idx + 2,
         total_installments: installmentCount,
         amount: partAmount,
-        due_date: toISODate(addMonths(today, idx + 1)),
+        ...schedule[idx + 1],
       }));
 
       const { error: installmentsError } = await supabase
@@ -176,6 +191,7 @@ function NovoLancamentoPageInner() {
         .insert(futureInstallments);
 
       if (installmentsError) {
+        await supabase.from("transactions").delete().eq("id", inserted.id);
         setError(installmentsError.message);
         submittingRef.current = false;
         setLoading(false);
@@ -239,6 +255,12 @@ function NovoLancamentoPageInner() {
           >
             {type === "transferencia" ? "← Voltar" : "Transferir entre contas"}
           </button>
+
+          <label className="text-sm text-text-muted dark:text-text-muted-dark">
+            Data da compra / lançamento
+            <input type="date" required value={purchaseDate} onChange={e => setPurchaseDate(e.target.value)}
+              className="mt-1 w-full rounded-card border border-line-soft bg-white px-3.5 py-2.5 text-ink dark:border-text-muted-dark/20 dark:bg-surface-dark dark:text-sage" />
+          </label>
 
           <MoneyInput
             required
@@ -308,14 +330,14 @@ function NovoLancamentoPageInner() {
             className="w-full rounded-card border border-line-soft bg-white px-3.5 py-2.5 text-sm text-ink outline-none focus:border-forest dark:border-text-muted-dark/20 dark:bg-surface-dark dark:text-sage"
           />
 
-          {type !== "transferencia" && (
+          {type !== "transferencia" && !(type === "despesa" && isCardAccount) && (
             <div className="flex items-center justify-between text-sm text-text-muted dark:text-text-muted-dark">
               Repetir todo mês
               <ToggleSwitch checked={isRecurring} onChange={setIsRecurring} />
             </div>
           )}
 
-          {type !== "transferencia" && (
+          {type !== "transferencia" && !(type === "despesa" && isCardAccount) && (
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between text-sm text-text-muted dark:text-text-muted-dark">
                 {type === "despesa" ? "Ainda não paguei" : "Ainda não recebi"}
@@ -363,11 +385,17 @@ function NovoLancamentoPageInner() {
             </div>
           )}
 
+          {preview && (
+            <p className="text-xs text-text-muted dark:text-text-muted-dark" aria-live="polite">
+              Primeira parcela na fatura de {new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric", timeZone: "America/Sao_Paulo" }).format(new Date(preview.invoice_month + "-01T12:00:00-03:00"))}, vence em {preview.due_date.split("-").reverse().join("/")}.
+            </p>
+          )}
+          {cardError && <p className="text-sm text-wine dark:text-wine-dark">{cardError}</p>}
           {error && <p className="text-sm text-wine dark:text-wine-dark">{error}</p>}
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || !!cardError}
             className="rounded-full bg-forest py-3 text-sm font-medium text-white disabled:opacity-60"
           >
             {loading

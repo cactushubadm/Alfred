@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { cardSchedule, todaySaoPaulo } from "@/lib/cartao";
 import BottomNav from "@/components/BottomNav";
 
 // Dados financeiros nunca podem vir de cache — mesma regra do dashboard.
@@ -11,54 +12,6 @@ const currency = (v: number) =>
 
 function dateLabel(dateStr: string) {
   return new Date(dateStr + "T00:00:00").toLocaleDateString("pt-BR");
-}
-
-function pad2(n: number) {
-  return String(n).padStart(2, "0");
-}
-
-function ymd(year: number, month: number, day: number) {
-  return `${year}-${pad2(month)}-${pad2(day)}`;
-}
-
-function daysInMonth(year: number, month: number) {
-  return new Date(year, month, 0).getDate();
-}
-
-function addMonths(year: number, month: number, delta: number) {
-  const total = year * 12 + (month - 1) + delta;
-  return { year: Math.floor(total / 12), month: (total % 12) + 1 };
-}
-
-// Ciclo de fatura em aberto: [início, fim], como strings ISO (comparáveis
-// como texto porque o formato é sempre AAAA-MM-DD). Sem dia de fechamento
-// definido, cai de volta pro mês calendário como aproximação razoável.
-function currentInvoiceCycle(todayISO: string, closingDay: number | null) {
-  const [ty, tm, td] = todayISO.split("-").map(Number);
-
-  if (closingDay == null) {
-    return { start: ymd(ty, tm, 1), end: ymd(ty, tm, daysInMonth(ty, tm)) };
-  }
-
-  const thisClose = Math.min(closingDay, daysInMonth(ty, tm));
-
-  if (td <= thisClose) {
-    const prev = addMonths(ty, tm, -1);
-    const prevClose = Math.min(closingDay, daysInMonth(prev.year, prev.month));
-    const startDay = prevClose + 1;
-    const start =
-      startDay > daysInMonth(prev.year, prev.month)
-        ? ymd(ty, tm, 1)
-        : ymd(prev.year, prev.month, startDay);
-    return { start, end: ymd(ty, tm, thisClose) };
-  }
-
-  const next = addMonths(ty, tm, 1);
-  const nextClose = Math.min(closingDay, daysInMonth(next.year, next.month));
-  const startDay = thisClose + 1;
-  const start =
-    startDay > daysInMonth(ty, tm) ? ymd(next.year, next.month, 1) : ymd(ty, tm, startDay);
-  return { start, end: ymd(next.year, next.month, nextClose) };
 }
 
 export default async function CartaoPage({ params }: { params: { id: string } }) {
@@ -73,37 +26,35 @@ export default async function CartaoPage({ params }: { params: { id: string } })
 
   if (!account) notFound();
 
-  const todayISO = new Date().toISOString().slice(0, 10);
-  const cycle = currentInvoiceCycle(todayISO, account.closing_day);
+  const todayISO = todaySaoPaulo();
+  const invoiceMonth = account.closing_day && account.due_day
+    ? cardSchedule(todayISO, account.closing_day, account.due_day)[0].invoice_month
+    : todayISO.slice(0, 7);
 
-  const { data: purchases } = await supabase
-    .from("transactions")
-    .select("id, amount, description, occurred_at")
-    .eq("account_id", account.id)
-    .eq("type", "despesa");
-
-  const { data: installmentRows } = await supabase
-    .from("installments")
-    .select(
-      "id, installment_number, total_installments, amount, due_date, transactions!inner(account_id, description)"
-    )
-    .eq("transactions.account_id", account.id)
-    .order("due_date");
+  const [{ data: purchases }, { data: installmentRows }] = await Promise.all([
+    supabase.from("transactions").select("id, amount, description, invoice_month, card_due_date")
+      .eq("account_id", account.id).eq("type", "despesa"),
+    supabase.from("installments")
+      .select("id, installment_number, total_installments, amount, due_date, invoice_month, transactions!inner(id, account_id, description)")
+      .eq("transactions.account_id", account.id).order("due_date"),
+  ]);
 
   const installments = (installmentRows ?? []).map((row) => ({
     id: row.id as string,
+    transactionId: (row.transactions as unknown as { id: string }).id,
     installmentNumber: row.installment_number as number,
     totalInstallments: row.total_installments as number,
     amount: Number(row.amount),
     dueDate: row.due_date as string,
+    invoiceMonth: row.invoice_month as string,
     description: (row.transactions as unknown as { description: string | null }).description,
   }));
 
   const currentCyclePurchases = (purchases ?? []).filter(
-    (t) => t.occurred_at >= cycle.start && t.occurred_at <= cycle.end
+    (t) => t.invoice_month === invoiceMonth
   );
   const currentCycleInstallments = installments.filter(
-    (i) => i.dueDate >= cycle.start && i.dueDate <= cycle.end
+    (i) => i.invoiceMonth === invoiceMonth
   );
 
   const faturaAtual =
@@ -114,14 +65,21 @@ export default async function CartaoPage({ params }: { params: { id: string } })
   // faturas seguintes — é o que faz o limite disponível não ser só
   // "limite − fatura atual".
   const futureBeyondCycle = installments
-    .filter((i) => i.dueDate > cycle.end)
+    .filter((i) => i.invoiceMonth > invoiceMonth)
     .reduce((sum, i) => sum + i.amount, 0);
 
-  const totalCommitted = faturaAtual + futureBeyondCycle;
+  const totalCommitted = faturaAtual + futureBeyondCycle + (purchases ?? [])
+    .filter(t => t.invoice_month > invoiceMonth).reduce((sum, t) => sum + Number(t.amount), 0);
   const limiteDisponivel =
     account.credit_limit != null ? Number(account.credit_limit) - totalCommitted : null;
 
-  const openInstallments = installments
+  const firstInstallments = (purchases ?? []).filter(t => t.invoice_month && t.card_due_date).map(t => ({
+    id: t.id as string, installmentNumber: 1,
+    totalInstallments: installments.find(i => i.transactionId === t.id)?.totalInstallments ?? 1,
+    amount: Number(t.amount), dueDate: t.card_due_date as string,
+    invoiceMonth: t.invoice_month as string, description: t.description as string | null,
+  }));
+  const openInstallments = [...firstInstallments, ...installments]
     .filter((i) => i.dueDate >= todayISO)
     .sort((a, b) => (a.dueDate < b.dueDate ? -1 : 1));
 
@@ -143,7 +101,7 @@ export default async function CartaoPage({ params }: { params: { id: string } })
                 {currency(faturaAtual)}
               </p>
               <p className="mt-1 text-[11px] text-text-muted dark:text-text-muted-dark">
-                {dateLabel(cycle.start)} – {dateLabel(cycle.end)}
+                {invoiceMonth.split("-").reverse().join("/")}
               </p>
             </div>
             <div className="rounded-card bg-white px-3.5 py-3 dark:bg-surface-dark">
@@ -165,8 +123,7 @@ export default async function CartaoPage({ params }: { params: { id: string } })
               <Link href="/contas" className="underline">
                 Contas
               </Link>{" "}
-              para uma fatura mais precisa — por ora, considerando o mês
-              calendário.
+              para lançar compras neste cartão.
             </p>
           )}
 

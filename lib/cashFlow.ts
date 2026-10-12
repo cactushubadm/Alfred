@@ -1,3 +1,4 @@
+import { todaySaoPaulo } from "./cartao";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { addOneMonth } from "./recurring";
 import { monthBounds } from "./finance";
@@ -8,16 +9,17 @@ export type ProjectedItem = {
   amount: number;
   description: string;
   source: "recorrente" | "parcela" | "pendente";
+  invoiceMonth?: string;
 };
 
 function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  return todaySaoPaulo();
 }
 
 function addDays(dateISO: string, days: number) {
   const d = new Date(dateISO + "T00:00:00");
   d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 // Projeta o fluxo de caixa dos próximos `horizonDays`, somando três fontes:
@@ -35,7 +37,7 @@ export async function projectCashFlow(
   const items: ProjectedItem[] = [];
 
   // As 3 fontes são independentes entre si — rodam em paralelo.
-  const [{ data: recurring }, { data: installmentRows }, { data: pending }] = await Promise.all([
+  const [{ data: recurring }, { data: installmentRows }, { data: pending }, { data: cardPurchases }] = await Promise.all([
     supabase
       .from("transactions")
       .select("id, type, amount, description, occurred_at, recurring_source_id, categories(name)")
@@ -43,15 +45,18 @@ export async function projectCashFlow(
       .in("type", ["receita", "despesa"]),
     supabase
       .from("installments")
-      .select("amount, due_date, transactions!inner(description)")
+      .select("amount, due_date, invoice_month, transactions!inner(description)")
       .gte("due_date", today)
       .lte("due_date", horizonEnd),
     supabase
       .from("transactions")
       .select("type, amount, description, due_date, categories(name)")
       .in("status", ["pendente", "atrasado"])
+      .is("invoice_month", null)
       .gte("due_date", today)
       .lte("due_date", horizonEnd),
+    supabase.from("transactions").select("amount, description, invoice_month, card_due_date")
+      .not("invoice_month", "is", null).gte("card_due_date", today).lte("card_due_date", horizonEnd),
   ]);
 
   // 1. Recorrentes ainda não materializados
@@ -84,8 +89,14 @@ export async function projectCashFlow(
       amount: Number(row.amount),
       description: (row.transactions as any)?.description || "Parcela do cartão",
       source: "parcela",
+      invoiceMonth: row.invoice_month as string,
     });
   });
+
+  (cardPurchases ?? []).forEach(row => items.push({
+    date: row.card_due_date, type: "despesa", amount: Number(row.amount),
+    description: row.description || "Compra no cartão", source: "parcela", invoiceMonth: row.invoice_month,
+  }));
 
   // 3. Contas a pagar/receber dentro do período
   (pending ?? []).forEach((t) => {
