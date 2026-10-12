@@ -1,3 +1,4 @@
+import { todaySaoPaulo } from "./cartao";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 function pad2(n: number) {
@@ -29,10 +30,9 @@ function monthsBetweenExclusive(fromMonth: string, toMonth: string): string[] {
 // sem job de fundo, só quando o usuário abre a tela (mesmo espírito de
 // `generateDueRecurringTransactions`).
 export async function computeAndSnapshotNetWorth(supabase: SupabaseClient, userId: string) {
-  const now = new Date();
-  const monthDate = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-01`;
+  const monthDate = todaySaoPaulo().slice(0, 7) + "-01";
 
-  // As 8 consultas abaixo são todas independentes entre si — só o cálculo
+  // As consultas abaixo são todas independentes entre si — só o cálculo
   // final e os upserts dependem delas — então rodam em paralelo.
   const [
     { data: accounts },
@@ -43,9 +43,10 @@ export async function computeAndSnapshotNetWorth(supabase: SupabaseClient, userI
     { data: debts },
     { data: openInstallments },
     { data: lastSnapshot },
+    { data: openCardPurchases },
   ] = await Promise.all([
     supabase.from("accounts").select("id, type"),
-    supabase.from("transactions").select("type, amount, account_id, transfer_account_id"),
+    supabase.from("transactions").select("type, amount, account_id, transfer_account_id, removed_card, removed_transfer_card"),
     supabase.from("investment_profiles").select("current_balance").eq("type", "reserva").maybeSingle(),
     supabase.from("reserve_movements").select("amount"),
     supabase
@@ -57,7 +58,7 @@ export async function computeAndSnapshotNetWorth(supabase: SupabaseClient, userI
     supabase
       .from("installments")
       .select("amount, due_date")
-      .gte("due_date", new Date().toISOString().slice(0, 10)),
+      .is("paid_at", null),
     supabase
       .from("net_worth_snapshots")
       .select("month_date, assets, liabilities, net_worth")
@@ -65,6 +66,8 @@ export async function computeAndSnapshotNetWorth(supabase: SupabaseClient, userI
       .order("month_date", { ascending: false })
       .limit(1)
       .maybeSingle(),
+    supabase.from("transactions").select("amount, accounts!account_id(type)")
+      .eq("type", "despesa").is("card_paid_at", null),
   ]);
 
   const accountTypeById = new Map((accounts ?? []).map((a) => [a.id, a.type as string]));
@@ -75,10 +78,10 @@ export async function computeAndSnapshotNetWorth(supabase: SupabaseClient, userI
   let contasBalance = 0;
   (transactions ?? []).forEach((t) => {
     const amount = Number(t.amount);
-    const originIsCard = t.account_id ? accountTypeById.get(t.account_id) === "cartao" : true;
-    const destIsCard = t.transfer_account_id
+    const originIsCard = t.removed_card || (t.account_id ? accountTypeById.get(t.account_id) === "cartao" : true);
+    const destIsCard = t.removed_transfer_card || (t.transfer_account_id
       ? accountTypeById.get(t.transfer_account_id) === "cartao"
-      : true;
+      : true);
 
     if (t.type === "receita") {
       if (!originIsCard) contasBalance += amount;
@@ -98,10 +101,12 @@ export async function computeAndSnapshotNetWorth(supabase: SupabaseClient, userI
 
   const longoPrazoBalance = longoPrazoProfile ? Number(longoPrazoProfile.current_balance) : 0;
 
-  // Passivos: saldo devedor das dívidas + parcelas futuras ainda não
-  // vencidas (mesma definição de "em aberto" usada em `app/cartoes/[id]`).
+  // Passivos: dívidas e parcelas sem quitação explícita, inclusive vencidas.
+  // Contas arquivadas continuam participando; snapshots passados não mudam.
   const debtsSum = (debts ?? []).reduce((sum, d) => sum + Number(d.balance), 0);
-  const installmentsSum = (openInstallments ?? []).reduce((sum, i) => sum + Number(i.amount), 0);
+  const installmentsSum = (openInstallments ?? []).reduce((sum, i) => sum + Number(i.amount), 0)
+    + (openCardPurchases ?? []).filter(t => (t.accounts as unknown as { type: string } | null)?.type === "cartao")
+      .reduce((sum, t) => sum + Number(t.amount), 0);
 
   const assets = contasBalance + reservaTotal + longoPrazoBalance;
   const liabilities = debtsSum + installmentsSum;

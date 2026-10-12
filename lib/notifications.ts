@@ -178,6 +178,7 @@ export async function getNotifications(supabase: SupabaseClient): Promise<Notifi
   const { data: dueInstallments } = await supabase
     .from("installments")
     .select("id, amount, due_date, transactions!inner(description, account_id)")
+    .is("paid_at", null)
     .gte("due_date", today)
     .lte("due_date", in3Days);
 

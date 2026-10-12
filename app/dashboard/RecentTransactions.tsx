@@ -13,6 +13,8 @@ type Transaction = {
   amount: number;
   description: string | null;
   occurred_at: string;
+  removed_card: boolean;
+  removed_transfer_card: boolean;
   categories: any;
   origem: any;
   destino: any;
@@ -57,8 +59,8 @@ export default function RecentTransactions({
           const label =
             t.description ||
             (t.type === "transferencia"
-              ? `Transferência: ${(t.origem as any)?.name ?? "?"} → ${
-                  (t.destino as any)?.name ?? "?"
+              ? `Transferência: ${t.removed_card ? "Cartão removido" : (t.origem as any)?.name ?? "?"} → ${
+                  t.removed_transfer_card ? "Cartão removido" : (t.destino as any)?.name ?? "?"
                 }`
               : (t.categories as any)?.name) ||
             "Lançamento";
@@ -85,7 +87,8 @@ export default function RecentTransactions({
               </div>
               <div className="mt-1.5 flex items-center justify-between">
                 <p className="text-[11px] text-text-muted dark:text-text-muted-dark">
-                  {new Date(t.occurred_at).toLocaleDateString("pt-BR")}
+                  {t.occurred_at.split("-").reverse().join("/")}
+                  {t.removed_card || t.removed_transfer_card ? " · Cartão removido" : ""}
                 </p>
                 <div className="flex gap-2">
                   <PressableLink

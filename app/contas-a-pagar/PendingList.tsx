@@ -13,6 +13,7 @@ type Transaction = {
   description: string | null;
   due_date: string;
   status: string;
+  removed_card: boolean;
   categories: any;
   conta: any;
 };
@@ -92,7 +93,7 @@ export default function PendingList({ transactions }: { transactions: Transactio
               >
                 {overdue ? "Atrasado · " : "Vence em "}
                 {dateLabel(t.due_date)}
-                {t.conta?.name ? ` · ${t.conta.name}` : ""}
+                {t.removed_card ? " · Cartão removido" : t.conta?.name ? ` · ${t.conta.name}` : ""}
               </p>
               <PressableButton
                 type="button"

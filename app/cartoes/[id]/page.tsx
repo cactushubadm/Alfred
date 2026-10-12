@@ -19,7 +19,7 @@ export default async function CartaoPage({ params }: { params: { id: string } })
 
   const { data: account } = await supabase
     .from("accounts")
-    .select("id, name, credit_limit, closing_day, due_day")
+    .select("id, name, credit_limit, closing_day, due_day, archived_at")
     .eq("id", params.id)
     .eq("type", "cartao")
     .maybeSingle();
@@ -32,10 +32,10 @@ export default async function CartaoPage({ params }: { params: { id: string } })
     : todayISO.slice(0, 7);
 
   const [{ data: purchases }, { data: installmentRows }] = await Promise.all([
-    supabase.from("transactions").select("id, amount, description, invoice_month, card_due_date")
+    supabase.from("transactions").select("id, amount, description, invoice_month, card_due_date, card_paid_at")
       .eq("account_id", account.id).eq("type", "despesa"),
     supabase.from("installments")
-      .select("id, installment_number, total_installments, amount, due_date, invoice_month, transactions!inner(id, account_id, description)")
+      .select("id, installment_number, total_installments, amount, due_date, invoice_month, paid_at, transactions!inner(id, account_id, description)")
       .eq("transactions.account_id", account.id).order("due_date"),
   ]);
 
@@ -46,6 +46,7 @@ export default async function CartaoPage({ params }: { params: { id: string } })
     totalInstallments: row.total_installments as number,
     amount: Number(row.amount),
     dueDate: row.due_date as string,
+    paidAt: row.paid_at as string | null,
     invoiceMonth: row.invoice_month as string,
     description: (row.transactions as unknown as { description: string | null }).description,
   }));
@@ -61,26 +62,21 @@ export default async function CartaoPage({ params }: { params: { id: string } })
     currentCyclePurchases.reduce((sum, t) => sum + Number(t.amount), 0) +
     currentCycleInstallments.reduce((sum, i) => sum + i.amount, 0);
 
-  // Compromissos além desta fatura: parcelas futuras que ainda vão cair em
-  // faturas seguintes — é o que faz o limite disponível não ser só
-  // "limite − fatura atual".
-  const futureBeyondCycle = installments
-    .filter((i) => i.invoiceMonth > invoiceMonth)
-    .reduce((sum, i) => sum + i.amount, 0);
-
-  const totalCommitted = faturaAtual + futureBeyondCycle + (purchases ?? [])
-    .filter(t => t.invoice_month > invoiceMonth).reduce((sum, t) => sum + Number(t.amount), 0);
-  const limiteDisponivel =
-    account.credit_limit != null ? Number(account.credit_limit) - totalCommitted : null;
+  // Quitação é explícita: dívidas vencidas também comprometem o limite.
+  // Arquivar nunca apaga dívidas, mas deixa de oferecer limite para uso diário.
+  const totalCommitted = installments.filter(i => !i.paidAt).reduce((sum, i) => sum + i.amount, 0)
+    + (purchases ?? []).filter(t => !t.card_paid_at).reduce((sum, t) => sum + Number(t.amount), 0);
+  const limiteDisponivel = !account.archived_at && account.credit_limit != null
+    ? Number(account.credit_limit) - totalCommitted : null;
 
   const firstInstallments = (purchases ?? []).filter(t => t.invoice_month && t.card_due_date).map(t => ({
     id: t.id as string, installmentNumber: 1,
     totalInstallments: installments.find(i => i.transactionId === t.id)?.totalInstallments ?? 1,
-    amount: Number(t.amount), dueDate: t.card_due_date as string,
+    paidAt: t.card_paid_at as string | null, amount: Number(t.amount), dueDate: t.card_due_date as string,
     invoiceMonth: t.invoice_month as string, description: t.description as string | null,
   }));
   const openInstallments = [...firstInstallments, ...installments]
-    .filter((i) => i.dueDate >= todayISO)
+    .filter((i) => !i.paidAt)
     .sort((a, b) => (a.dueDate < b.dueDate ? -1 : 1));
 
   return (
@@ -94,6 +90,8 @@ export default async function CartaoPage({ params }: { params: { id: string } })
         </div>
 
         <div className="rounded-b-sheet bg-sage px-5 pb-6 pt-5 dark:bg-ink">
+          {account.archived_at && <p className="mb-3 text-sm text-text-muted dark:text-text-muted-dark">Cartão arquivado. O histórico e as pendências estão preservados.</p>}
+          <Link href="/contas" className="mb-3 inline-block text-sm text-forest underline dark:text-sage-mint">Gerenciar cartão e quitação</Link>
           <div className="grid grid-cols-2 gap-2.5">
             <div className="rounded-card bg-white px-3.5 py-3 dark:bg-surface-dark">
               <p className="text-xs text-text-muted dark:text-text-muted-dark">Fatura atual</p>
@@ -104,7 +102,7 @@ export default async function CartaoPage({ params }: { params: { id: string } })
                 {invoiceMonth.split("-").reverse().join("/")}
               </p>
             </div>
-            <div className="rounded-card bg-white px-3.5 py-3 dark:bg-surface-dark">
+            {!account.archived_at && <div className="rounded-card bg-white px-3.5 py-3 dark:bg-surface-dark">
               <p className="text-xs text-text-muted dark:text-text-muted-dark">Limite disponível</p>
               <p className="mt-1 text-lg font-medium text-forest dark:text-sage-mint">
                 {limiteDisponivel != null ? currency(limiteDisponivel) : "—"}
@@ -114,7 +112,7 @@ export default async function CartaoPage({ params }: { params: { id: string } })
                   ? `de ${currency(Number(account.credit_limit))} (já considera parcelas futuras)`
                   : "defina um limite na conta"}
               </p>
-            </div>
+            </div>}
           </div>
 
           {(account.closing_day == null || account.due_day == null) && (

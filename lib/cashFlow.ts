@@ -1,3 +1,4 @@
+import { canRepeatTransaction } from "./card-lifecycle";
 import { todaySaoPaulo } from "./cartao";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { addOneMonth } from "./recurring";
@@ -40,12 +41,13 @@ export async function projectCashFlow(
   const [{ data: recurring }, { data: installmentRows }, { data: pending }, { data: cardPurchases }] = await Promise.all([
     supabase
       .from("transactions")
-      .select("id, type, amount, description, occurred_at, recurring_source_id, categories(name)")
+      .select("id, type, amount, description, occurred_at, recurring_source_id, removed_card, removed_transfer_card, origem:accounts!account_id(archived_at), destino:accounts!transfer_account_id(archived_at), categories(name)")
       .eq("is_recurring", true)
       .in("type", ["receita", "despesa"]),
     supabase
       .from("installments")
       .select("amount, due_date, invoice_month, transactions!inner(description)")
+      .is("paid_at", null)
       .gte("due_date", today)
       .lte("due_date", horizonEnd),
     supabase
@@ -56,14 +58,14 @@ export async function projectCashFlow(
       .gte("due_date", today)
       .lte("due_date", horizonEnd),
     supabase.from("transactions").select("amount, description, invoice_month, card_due_date")
-      .not("invoice_month", "is", null).gte("card_due_date", today).lte("card_due_date", horizonEnd),
+      .not("invoice_month", "is", null).is("card_paid_at", null).gte("card_due_date", today).lte("card_due_date", horizonEnd),
   ]);
 
   // 1. Recorrentes ainda não materializados
   const childOf = new Set(
     (recurring ?? []).filter((r) => r.recurring_source_id).map((r) => r.recurring_source_id)
   );
-  const chainTips = (recurring ?? []).filter((r) => !childOf.has(r.id));
+  const chainTips = (recurring ?? []).filter((r) => !childOf.has(r.id) && canRepeatTransaction(r));
 
   chainTips.forEach((leaf) => {
     let cursor = addOneMonth(leaf.occurred_at as string);

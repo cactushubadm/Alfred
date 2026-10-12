@@ -615,3 +615,64 @@ relatórios mensais da Wave 4; aqui é só o checklist de que está feito.
   precisam de índice — checar isso ao criar uma tabela ou uma query nova
 - Teste de velocidade real é sempre `npm run build && npm start` — `npm run
   dev` não recompila com as otimizações de produção e mascara o número real
+
+## Ciclo de vida dos cartões — arquivar e excluir
+
+Cartões são `accounts.type = 'cartao'`; não existe tabela `credit_cards`.
+`transactions.account_id` e `transfer_account_id` referenciam `accounts`
+com **ON DELETE SET NULL**. `installments.transaction_id` referencia o
+lançamento com **ON DELETE CASCADE**; não referencia o cartão diretamente.
+Relatórios mensais e snapshots de patrimônio não têm FK para contas.
+
+Migration `0023_card_lifecycle.sql` (aplicar manualmente somente após avisar
+o usuário): `accounts.archived_at`, marcadores `transactions.removed_card`
+e `removed_transfer_card`, `transactions.card_paid_at` e `installments.paid_at`.
+Não faz backfill de quitação: `transactions.status = 'pago'` indica o estado
+do lançamento, não comprova pagamento da fatura; parcelas vencidas sem
+quitação explícita continuam em aberto. Dados antigos sem comprovação
+bloqueiam a exclusão até o usuário confirmar as parcelas já pagas, ou remover
+os lançamentos correspondentes. A interface permite confirmação individual
+de quitação em **Contas → Gerenciar cartão**. Essa ação confirma um pagamento
+já realizado; não cria saída bancária. A saída precisa estar registrada na
+conta de origem para que o saldo dessa conta também reflita o pagamento.
+
+Três caminhos:
+- Sem lançamentos nem parcelas: excluir definitivamente com confirmação.
+- Com histórico quitado: arquivar é a ação principal; excluir é secundária.
+- Com qualquer compromisso sem quitação (parcela 1, parcela futura, vencida,
+  compra única ou lançamento pendente): bloquear exclusão; permitir arquivar,
+  exibindo quantidades, valores e lista de pendências.
+
+Toda exclusão exige digitar o nome exato e exibe contagens dos lançamentos e
+parcelas afetados. **Nunca apagar lançamentos ou parcelas ao excluir cartão**:
+marcar a origem/destino como removido e deixar as FKs anularem o vínculo,
+preservando valores, datas e dados de fatura. Nas listas, mostrar “Cartão
+removido”, distinguindo de um lançamento criado originalmente sem conta.
+
+`app/contas/card-actions.ts` valida sessão e titularidade explicitamente;
+`card_lifecycle` revalida `auth.uid()` no Postgres, bloqueia linhas e executa
+as alterações numa transação. Não usar credenciais administrativas no app.
+RLS bloqueia exclusão direta de cartões; trigger impede contornar a regra
+mudando seu tipo. Triggers bloqueiam novos vínculos/parcelas em contas
+arquivadas, inclusive formulários abertos antes do arquivamento.
+
+Arquivados somem da lista padrão, de seletores de novo lançamento e do
+limite disponível. “Mostrar cartões arquivados” permite restaurar e gerenciar
+pendências. Edição de histórico conserva o vínculo arquivado existente, mas
+não oferece cartões arquivados para novos vínculos. A página de fatura pode
+ser consultada por link antigo, sem disponibilizar limite do cartão arquivado.
+
+Arquivar não filtra histórico nos relatórios, snapshots ou patrimônio e não
+retira obrigações do fluxo de caixa. Quitação explícita retira compromissos
+do limite, projeções, notificações de parcelas e passivos atuais, sem apagar
+os gastos históricos nem reescrever relatórios/snapshots passados. Patrimônio
+conta também a primeira parcela/compra única em aberto e parcelas vencidas;
+usa os marcadores de origem/destino removidos para preservar a classificação
+financeira após exclusão. A exclusão só é permitida quando não há passivos
+do cartão em aberto.
+
+Novas ocorrências recorrentes de contas arquivadas ou vínculos removidos são
+pausadas na geração e na projeção; parcelas já cadastradas continuam contando.
+Para validar: `npm test` inclui PostgreSQL em memória via PGlite (sem acessar
+Supabase), cobrindo RLS, titularidade, bloqueios, quitação, preservação de
+lançamentos/parcelas/relatórios/snapshots e compra inserida após a prévia.

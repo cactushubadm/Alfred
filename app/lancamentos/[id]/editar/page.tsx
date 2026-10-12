@@ -10,7 +10,7 @@ import ToggleSwitch from "@/components/ToggleSwitch";
 
 type MovementType = "receita" | "despesa" | "transferencia";
 type Category = { id: string; name: string; icon: string; type: "receita" | "despesa" };
-type Account = { id: string; name: string };
+type Account = { id: string; name: string; archived_at: string | null };
 
 export default function EditarLancamentoPage() {
   const router = useRouter();
@@ -39,7 +39,7 @@ export default function EditarLancamentoPage() {
   useEffect(() => {
     supabase
       .from("accounts")
-      .select("id, name")
+      .select("id, name, archived_at")
       .order("name")
       .then(({ data }) => setAccounts(data ?? []));
   }, []);
@@ -232,9 +232,9 @@ export default function EditarLancamentoPage() {
                 <option value="" disabled>
                   De qual conta?
                 </option>
-                {accounts.map((a) => (
+                {accounts.filter(a => !a.archived_at || [accountId, fromAccountId, toAccountId].includes(a.id)).map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.name}
+                    {a.name}{a.archived_at ? " (arquivado)" : ""}
                   </option>
                 ))}
               </select>
@@ -248,9 +248,9 @@ export default function EditarLancamentoPage() {
                 <option value="" disabled>
                   Para qual conta?
                 </option>
-                {accounts.map((a) => (
+                {accounts.filter(a => !a.archived_at || [accountId, fromAccountId, toAccountId].includes(a.id)).map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.name}
+                    {a.name}{a.archived_at ? " (arquivado)" : ""}
                   </option>
                 ))}
               </select>
@@ -265,9 +265,9 @@ export default function EditarLancamentoPage() {
                 className="w-full rounded-card border border-line-soft px-3.5 py-2.5 text-sm outline-none focus:border-forest dark:border-text-muted-dark/20 dark:bg-surface-dark dark:text-sage"
               >
                 <option value="">Sem conta</option>
-                {accounts.map((a) => (
+                {accounts.filter(a => !a.archived_at || [accountId, fromAccountId, toAccountId].includes(a.id)).map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.name}
+                    {a.name}{a.archived_at ? " (arquivado)" : ""}
                   </option>
                 ))}
               </select>

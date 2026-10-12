@@ -12,7 +12,7 @@ export default async function ContasAPagarPage() {
   const { data: transactions } = await supabase
     .from("transactions")
     .select(
-      "id, type, amount, description, due_date, status, categories(name), conta:accounts!account_id(name)"
+      "id, type, amount, description, due_date, status, removed_card, categories(name), conta:accounts!account_id(name)"
     )
     .in("status", ["pendente", "atrasado"])
     .not("due_date", "is", null)

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { ACCOUNT_TYPES, AccountType, accountTypeLabel } from "@/lib/accounts";
+import CardManagement from "./CardManagement";
 import MoneyInput from "@/components/MoneyInput";
 import BottomNav from "@/components/BottomNav";
 import { StaggerList, StaggerItem } from "@/components/motion/StaggerList";
@@ -17,6 +18,7 @@ type Account = {
   credit_limit: number | null;
   closing_day: number | null;
   due_day: number | null;
+  archived_at: string | null;
 };
 
 function parseLimit(value: string): number | null {
@@ -40,6 +42,7 @@ function ContasPageInner() {
   const searchParams = useSearchParams();
 
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -62,7 +65,7 @@ function ContasPageInner() {
     setLoading(true);
     const { data, error } = await supabase
       .from("accounts")
-      .select("id, name, type, credit_limit, closing_day, due_day")
+      .select("id, name, type, credit_limit, closing_day, due_day, archived_at")
       .order("name");
 
     if (error) {
@@ -148,6 +151,8 @@ function ContasPageInner() {
     loadAccounts();
   }
 
+  const visibleAccounts = accounts.filter(a => !a.archived_at || showArchived);
+
   return (
     <main className="flex min-h-screen justify-center bg-sage p-4 pb-24 dark:bg-ink">
       <div className="w-full max-w-sm">
@@ -158,18 +163,22 @@ function ContasPageInner() {
         <div className="rounded-b-sheet bg-sage pb-6 dark:bg-ink">
           {error && <p className="px-5 pt-4 text-sm text-wine dark:text-wine-dark">{error}</p>}
 
+          <label className="mt-4 flex items-center gap-2 px-5 text-sm text-text-muted dark:text-text-muted-dark">
+            <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
+            Mostrar cartões arquivados
+          </label>
           <div className="mt-4 px-5">
             {loading ? (
               <p className="rounded-card bg-white px-3.5 py-4 text-center text-sm text-text-muted dark:bg-surface-dark dark:text-text-muted-dark">
                 Carregando...
               </p>
-            ) : accounts.length === 0 ? (
+            ) : visibleAccounts.length === 0 ? (
               <p className="rounded-card bg-white px-3.5 py-4 text-center text-sm text-text-muted dark:bg-surface-dark dark:text-text-muted-dark">
                 Nenhuma conta cadastrada ainda.
               </p>
             ) : (
               <StaggerList className="flex flex-col gap-2">
-                {accounts.map((acc) => {
+                {visibleAccounts.map((acc) => {
                 const isEditing = editingId === acc.id;
 
                 if (isEditing) {
@@ -186,6 +195,7 @@ function ContasPageInner() {
                         className="rounded-card border border-line-soft bg-white px-3 py-2 text-sm text-ink outline-none focus:border-forest dark:border-text-muted-dark/20 dark:bg-surface-dark dark:text-sage"
                       />
                       <select
+                        disabled={acc.type === "cartao"}
                         value={editType}
                         onChange={(e) => setEditType(e.target.value as AccountType)}
                         className="w-full rounded-card border border-line-soft bg-white px-3 py-2 text-sm text-ink outline-none focus:border-forest dark:border-text-muted-dark/20 dark:bg-surface-dark dark:text-sage"
@@ -250,13 +260,14 @@ function ContasPageInner() {
                 return (
                   <StaggerItem
                     key={acc.id}
-                    className="flex items-center justify-between rounded-card bg-white px-3.5 py-2.5 dark:bg-surface-dark"
+                    className="rounded-card bg-white px-3.5 py-2.5 dark:bg-surface-dark"
                   >
+                    <div className="flex items-center justify-between gap-2">
                     <div>
-                      <p className="text-sm text-ink dark:text-sage">{acc.name}</p>
+                      <p className="text-sm text-ink dark:text-sage">{acc.name}{acc.archived_at ? " · Arquivado" : ""}</p>
                       <p className="text-[11px] text-text-muted dark:text-text-muted-dark">
                         {accountTypeLabel(acc.type)}
-                        {acc.type === "cartao" && acc.credit_limit != null
+                        {acc.type === "cartao" && !acc.archived_at && acc.credit_limit != null
                           ? ` · Limite: ${acc.credit_limit.toLocaleString("pt-BR", {
                               style: "currency",
                               currency: "BRL",
@@ -268,7 +279,7 @@ function ContasPageInner() {
                       </p>
                     </div>
                     <div className="flex gap-2">
-                      {acc.type === "cartao" && (
+                      {acc.type === "cartao" && !acc.archived_at && (
                         <PressableLink
                           href={`/cartoes/${acc.id}`}
                           className="rounded-full border border-line-soft px-3 py-1 text-[11px] font-medium text-forest dark:border-text-muted-dark/20 dark:text-sage-mint"
@@ -284,6 +295,8 @@ function ContasPageInner() {
                         Editar
                       </PressableButton>
                     </div>
+                    </div>
+                    {acc.type === "cartao" && <CardManagement card={acc} onChange={() => void loadAccounts()} />}
                   </StaggerItem>
                 );
                 })}

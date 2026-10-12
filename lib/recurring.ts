@@ -1,3 +1,4 @@
+import { canRepeatTransaction } from "./card-lifecycle";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 // Meses são clampeados no último dia quando o mês seguinte é mais curto
@@ -33,7 +34,7 @@ export async function generateDueRecurringTransactions(
     const { data: pending } = await supabase
       .from("transactions")
       .select(
-        "id, type, amount, description, category_id, account_id, transfer_account_id, occurred_at, due_date"
+        "id, type, amount, description, category_id, account_id, transfer_account_id, occurred_at, due_date, removed_card, removed_transfer_card, origem:accounts!account_id(archived_at), destino:accounts!transfer_account_id(archived_at)"
       )
       .eq("user_id", userId)
       .eq("is_recurring", true)
@@ -50,7 +51,7 @@ export async function generateDueRecurringTransactions(
       );
 
     const alreadyContinued = new Set((children ?? []).map((c) => c.recurring_source_id));
-    const toContinue = pending.filter((p) => !alreadyContinued.has(p.id));
+    const toContinue = pending.filter((p) => !alreadyContinued.has(p.id) && canRepeatTransaction(p));
 
     if (toContinue.length === 0) break;
 

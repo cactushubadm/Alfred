@@ -69,7 +69,7 @@ export default async function DashboardPage() {
     supabase
       .from("transactions")
       .select(
-        "id, type, amount, description, occurred_at, category_id, categories(name), origem:accounts!account_id(name), destino:accounts!transfer_account_id(name)"
+        "id, type, amount, description, occurred_at, removed_card, removed_transfer_card, category_id, categories(name), origem:accounts!account_id(name), destino:accounts!transfer_account_id(name)"
       )
       .gte("occurred_at", firstDay)
       .lte("occurred_at", lastDay)

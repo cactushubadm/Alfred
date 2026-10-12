@@ -61,6 +61,7 @@ function NovoLancamentoPageInner() {
     supabase
       .from("accounts")
       .select("id, name, type, closing_day, due_day")
+      .is("archived_at", null)
       .order("name")
       .then(({ data }) => setAccounts(data ?? []));
   }, []);
